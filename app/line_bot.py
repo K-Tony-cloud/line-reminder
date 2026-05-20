@@ -198,6 +198,27 @@ def _fmt_today(events: list, date_str: str) -> str:
     return _fmt_event_list(today_events, title=f"📅 งานวันนี้ ({thai_today})")
 
 
+def _fmt_daily_summary(events: list, date_str: str) -> str:
+    thai_today = _thai_date(date_str)
+    header = f"☀️ สรุปกิจกรรมวันนี้\nวันที่ {thai_today}"
+    if not events:
+        return f"{header}\n─────────────────────\n📭 ไม่มีกิจกรรมในวันนี้"
+
+    sorted_events = sorted(events, key=lambda e: e.event_time)
+    lines = [header, f"มีกิจกรรมทั้งหมด {len(sorted_events)} รายการ", "─────────────────────"]
+    for i, e in enumerate(sorted_events, 1):
+        lines.append(f"{i}) {e.event_name}")
+        lines.append(f"   ⏰ {e.event_time} น.")
+        if e.location:
+            lines.append(f"   📍 {e.location}")
+        responsible = e.responsible_list()
+        if responsible:
+            lines.append(f"   👤 {' | '.join(responsible)}")
+        if i < len(sorted_events):
+            lines.append("")
+    return "\n".join(lines)
+
+
 def _fmt_reminder(event) -> str:
     lines = [
         "⏰ แจ้งเตือนงาน",
@@ -297,61 +318,89 @@ def _messaging_api() -> MessagingApi:
 
 
 def reply(reply_token: str, text: str) -> None:
-    api = _messaging_api()
-    api.reply_message(
-        ReplyMessageRequest(
-            reply_token=reply_token,
-            messages=[TextMessage(type="text", text=text)],
+    logger.info("REPLY token=%s text=%r", reply_token[:8] + "…", text[:80])
+    try:
+        api = _messaging_api()
+        api.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(type="text", text=text)],
+            )
         )
-    )
+        logger.info("REPLY sent OK")
+    except Exception as e:
+        logger.error("REPLY failed: %s", e, exc_info=True)
+        raise
 
 
 def push(target_id: str, text: str) -> None:
-    """Push a message to a user ID or a group/room ID."""
-    api = _messaging_api()
-    api.push_message(
-        PushMessageRequest(
-            to=target_id,
-            messages=[TextMessage(type="text", text=text)],
+    logger.info("PUSH target=%s text=%r", target_id, text[:80])
+    try:
+        api = _messaging_api()
+        api.push_message(
+            PushMessageRequest(
+                to=target_id,
+                messages=[TextMessage(type="text", text=text)],
+            )
         )
-    )
+        logger.info("PUSH sent OK")
+    except Exception as e:
+        logger.error("PUSH failed: %s", e, exc_info=True)
+        raise
 
 
 # ─── Main handler ─────────────────────────────────────────────────────────────
 
 def handle_message(event: MessageEvent) -> None:
+    try:
+        _handle_message_inner(event)
+    except Exception as e:
+        logger.error("HANDLER unhandled exception: %s", e, exc_info=True)
+
+
+def _handle_message_inner(event: MessageEvent) -> None:
     if not isinstance(event.message, TextMessageContent):
+        logger.info("HANDLER non-text message type=%s — skipped", type(event.message).__name__)
         return
 
     text: str = event.message.text.strip()
     reply_token: str = event.reply_token
+    logger.info("HANDLER raw text=%r reply_token=%s…", text, reply_token[:8])
+
     ctx = _get_context(event)
     user_id = ctx["user_id"]
     group_id = ctx["group_id"]
     chat_type = ctx["chat_type"]
     display_name = ctx["display_name"]
     in_group = bool(group_id)
+    logger.info("HANDLER context user=%s display=%r chat=%s group=%s", user_id, display_name, chat_type, group_id or "-")
 
     settings = get_settings()
     cmd = text.split("\n")[0].strip().lower()
+    logger.info("HANDLER cmd=%r", cmd)
 
     # ── /help ─────────────────────────────────────────────────────────────────
     if cmd == "/help":
+        logger.info("HANDLER matched /help")
         reply(reply_token, HELP_TEXT)
         return
 
     # ── /add ──────────────────────────────────────────────────────────────────
     if cmd.startswith("/add"):
+        logger.info("HANDLER matched /add — parsing")
         parsed = _parse_add_multiline(text) or _parse_add_inline(text)
         if not parsed:
+            logger.warning("HANDLER /add parse failed — text=%r", text)
             reply(reply_token, "❌ รูปแบบไม่ถูกต้อง\n\nพิมพ์ /help เพื่อดูวิธีใช้งาน")
             return
 
+        logger.info("HANDLER /add parsed=%s", parsed)
         try:
             event_dt = datetime.strptime(
                 f"{parsed['event_date']} {parsed['event_time']}", "%Y-%m-%d %H:%M"
             )
         except ValueError:
+            logger.warning("HANDLER /add invalid datetime date=%r time=%r", parsed.get("event_date"), parsed.get("event_time"))
             reply(reply_token, "❌ วันที่หรือเวลาไม่ถูกต้อง\nรูปแบบ: YYYY-MM-DD และ HH:MM")
             return
 
@@ -374,16 +423,15 @@ def handle_message(event: MessageEvent) -> None:
             group_id=group_id,
             chat_type=chat_type,
         )
+        logger.info("HANDLER /add writing to Sheets — req=%s", req.model_dump())
         try:
             created = sheets.create_event(req)
-            logger.info(
-                "Event %s created by %s in %s=%s",
-                created.id, display_name, chat_type, group_id or user_id
-            )
-            reply(reply_token, _fmt_event_created(created, added_by=display_name if in_group else ""))
+            logger.info("HANDLER /add Sheets write OK — event_id=%s", created.id)
         except Exception as e:
-            logger.error("create_event failed: %s", e, exc_info=True)
+            logger.error("HANDLER /add Sheets write FAILED: %s", e, exc_info=True)
             reply(reply_token, f"❌ บันทึกงานไม่สำเร็จ: {e}")
+            return
+        reply(reply_token, _fmt_event_created(created, added_by=display_name if in_group else ""))
         return
 
     # ── /list ─────────────────────────────────────────────────────────────────
@@ -442,4 +490,5 @@ def handle_message(event: MessageEvent) -> None:
         )
         return
 
-    # Non-command messages are silently ignored — bot stays quiet in group chats
+    # Non-command messages — bot stays quiet in group chats
+    logger.info("HANDLER no command matched for cmd=%r — no reply sent", cmd)

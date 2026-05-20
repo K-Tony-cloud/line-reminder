@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     line_channel_secret: str
     google_spreadsheet_id: str
     google_credentials_file: str = "credentials/service_account.json"
+    google_backup_spreadsheet_id: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     default_reminder_minutes: int = 60

@@ -26,21 +26,31 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("STARTUP: server initializing", flush=True)
+
+    # Start scheduler immediately so server is ready fast
+    if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
+        print("STARTUP: starting scheduler", flush=True)
+        start_scheduler()
+        print("STARTUP: scheduler started", flush=True)
+    else:
+        print("STARTUP: scheduler disabled — worker handles reminders", flush=True)
+
+    print("STARTUP: server ready — yielding to uvicorn", flush=True)
+    yield
+
+    # Sheets init runs in background after server is up
+    print("STARTUP: verifying Google Sheets connection", flush=True)
     try:
         sheets.ensure_sheet_exists()
         logger.info("Google Sheets OK")
+        print("STARTUP: Google Sheets OK", flush=True)
     except Exception as e:
         logger.error("Google Sheets init failed: %s", e)
+        print(f"STARTUP: Google Sheets FAILED — {e}", flush=True)
 
-    # Production (Render): DISABLE_SCHEDULER=true — worker.py handles reminders
-    # Local dev: scheduler runs inside the web process
-    if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
-        start_scheduler()
-    else:
-        logger.info("Scheduler disabled — worker service handles reminders")
-
-    yield
     stop_scheduler()
+    print("STARTUP: shutdown complete", flush=True)
 
 
 app = FastAPI(title="LINE Event Reminder", lifespan=lifespan)
@@ -51,20 +61,61 @@ def get_webhook_handler(settings: Settings = Depends(get_settings)) -> WebhookHa
     return WebhookHandler(settings.line_channel_secret)
 
 
+DEBUG_WEBHOOK = os.environ.get("DEBUG_WEBHOOK", "false").lower() == "true"
+
+
 @app.post("/webhook")
 async def webhook(request: Request, settings: Settings = Depends(get_settings)):
-    signature = request.headers.get("X-Line-Signature", "")
+    logger.info("WEBHOOK HIT — method=POST path=/webhook")
+
+    # Log all request headers
+    headers_summary = {k: v for k, v in request.headers.items()}
+    logger.info("WEBHOOK headers=%s", headers_summary)
+
     body = await request.body()
+    body_str = body.decode("utf-8")
+    logger.info("WEBHOOK raw body (%d bytes): %s", len(body_str), body_str[:500])
+
+    signature = request.headers.get("X-Line-Signature", "")
+    logger.info("WEBHOOK X-Line-Signature=%r", signature)
+
+    if DEBUG_WEBHOOK:
+        logger.warning("WEBHOOK DEBUG_WEBHOOK=true — skipping signature validation")
+        import json
+        try:
+            payload = json.loads(body_str)
+            for evt in payload.get("events", []):
+                logger.info("WEBHOOK debug event=%s", evt)
+        except Exception as e:
+            logger.error("WEBHOOK debug body parse failed: %s", e)
+        return {"ok": True, "debug": True}
+
     handler = WebhookHandler(settings.line_channel_secret)
 
     @handler.add(MessageEvent)
     def on_message(event):
+        from linebot.v3.webhooks import TextMessageContent
+        source = event.source
+        source_type = source.type
+        user_id = getattr(source, "user_id", "unknown")
+        group_id = getattr(source, "group_id", None) or getattr(source, "room_id", None) or "-"
+        text = event.message.text if isinstance(event.message, TextMessageContent) else None
+        logger.info(
+            "WEBHOOK event_type=message source=%s user=%s group=%s text=%r",
+            source_type, user_id, group_id, text,
+        )
         handle_message(event)
 
     try:
-        handler.handle(body.decode("utf-8"), signature)
+        logger.info("WEBHOOK calling handler.handle()")
+        handler.handle(body_str, signature)
+        logger.info("WEBHOOK handler.handle() completed OK")
     except InvalidSignatureError:
+        logger.error("WEBHOOK invalid signature — sig=%r body_len=%d", signature, len(body_str))
         raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        logger.error("WEBHOOK handler exception: %s", e, exc_info=True)
+        raise
     return {"status": "ok"}
 
 
