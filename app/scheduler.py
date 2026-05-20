@@ -37,52 +37,34 @@ def _check_dedup(dedupe_key: str) -> bool:
 
 async def _fire_reminder(event_id: str) -> None:
     """APScheduler date-trigger callback for a single event reminder."""
-    import traceback
     now = datetime.now(BKK)
-    job_id = f"reminder:{event_id}"
-    pid = os.getpid()
-
-    all_jobs = scheduler.get_jobs()
-    logger.warning(
-        "REMINDER_FIRE event_id=%s job_id=%s pid=%d now=%s all_jobs=%s",
-        event_id, job_id, pid, now.isoformat(),
-        [(j.id, str(j.next_run_time)) for j in all_jobs],
-    )
+    logger.info("Reminder firing — event_id=%s", event_id)
 
     try:
         event = get_event_by_id(event_id)
     except Exception as e:
-        logger.error("REMINDER %s — Sheets lookup failed: %s", event_id, e)
+        logger.error("Reminder %s — Sheets lookup failed: %s", event_id, e)
         return
 
     if event is None:
-        logger.warning("REMINDER %s — not found in Sheets", event_id)
+        logger.warning("Reminder %s — not found in Sheets", event_id)
         return
     if event.status != EventStatus.active:
-        logger.warning("REMINDER %s — status=%s SKIP", event_id, event.status.value)
+        logger.info("Reminder %s — status=%s, skip", event_id, event.status.value)
         return
 
     target_id = event.target_id
-    scheduled_time = now.strftime("%Y-%m-%dT%H:%M")
-    dedupe_key = f"{event_id}:{target_id}:{scheduled_time}"
-
-    logger.warning(
-        "REMINDER_PRE_SEND event_id=%s target=%s dedupe_key=%r method=push_message pid=%d",
-        event_id, target_id, dedupe_key, pid,
-    )
-
+    dedupe_key = f"{event_id}:{target_id}:{now.strftime('%Y-%m-%dT%H:%M')}"
     if _check_dedup(dedupe_key):
         return
 
     try:
         mark_reminder_sent(event_id)
         push(target_id, _fmt_reminder(event))
-        logger.warning("REMINDER_DONE event_id=%s target=%s sent_at=%s",
-            event_id, target_id, datetime.now(BKK).isoformat())
+        logger.info("Reminder sent — event_id=%s target=%s", event_id, target_id)
     except Exception as e:
-        # Remove dedup key on failure so a retry is possible
         _recent_sends.pop(dedupe_key, None)
-        logger.error("REMINDER FAILED — event_id=%s: %s", event_id, e)
+        logger.error("Reminder failed — event_id=%s: %s", event_id, e)
 
 
 def schedule_event_reminder(event) -> None:

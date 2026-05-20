@@ -71,28 +71,19 @@ DEBUG_WEBHOOK = os.environ.get("DEBUG_WEBHOOK", "false").lower() == "true"
 
 @app.post("/webhook")
 async def webhook(request: Request, settings: Settings = Depends(get_settings)):
-    logger.info("WEBHOOK HIT — method=POST path=/webhook")
-
-    # Log all request headers
-    headers_summary = {k: v for k, v in request.headers.items()}
-    logger.info("WEBHOOK headers=%s", headers_summary)
-
     body = await request.body()
     body_str = body.decode("utf-8")
-    logger.info("WEBHOOK raw body (%d bytes): %s", len(body_str), body_str[:500])
-
     signature = request.headers.get("X-Line-Signature", "")
-    logger.info("WEBHOOK X-Line-Signature=%r", signature)
 
     if DEBUG_WEBHOOK:
-        logger.warning("WEBHOOK DEBUG_WEBHOOK=true — skipping signature validation")
+        logger.warning("DEBUG_WEBHOOK=true — skipping signature validation")
         import json
         try:
             payload = json.loads(body_str)
             for evt in payload.get("events", []):
-                logger.info("WEBHOOK debug event=%s", evt)
+                logger.info("Webhook debug event=%s", evt)
         except Exception as e:
-            logger.error("WEBHOOK debug body parse failed: %s", e)
+            logger.error("Webhook debug body parse failed: %s", e)
         return {"ok": True, "debug": True}
 
     handler = WebhookHandler(settings.line_channel_secret)
@@ -100,23 +91,15 @@ async def webhook(request: Request, settings: Settings = Depends(get_settings)):
     @handler.add(MessageEvent)
     def on_message(event):
         from linebot.v3.webhooks import TextMessageContent
-        source = event.source
-        source_type = source.type
-        user_id = getattr(source, "user_id", "unknown")
-        group_id = getattr(source, "group_id", None) or getattr(source, "room_id", None) or "-"
         text = event.message.text if isinstance(event.message, TextMessageContent) else None
-        logger.info(
-            "WEBHOOK event_type=message source=%s user=%s group=%s text=%r",
-            source_type, user_id, group_id, text,
-        )
+        user_id = getattr(event.source, "user_id", "unknown")
+        logger.info("Webhook message user=%s text=%r", user_id, text)
         handle_message(event)
 
     try:
-        logger.info("WEBHOOK calling handler.handle()")
         handler.handle(body_str, signature)
-        logger.info("WEBHOOK handler.handle() completed OK")
     except InvalidSignatureError:
-        logger.error("WEBHOOK invalid signature — sig=%r body_len=%d", signature, len(body_str))
+        logger.error("Webhook invalid signature")
         raise HTTPException(status_code=400, detail="Invalid signature")
     except Exception as e:
         logger.error("WEBHOOK handler exception: %s", e, exc_info=True)

@@ -334,14 +334,7 @@ def reply(reply_token: str, text: str) -> None:
 
 
 def push(target_id: str, text: str) -> None:
-    import uuid as _uuid
-    import traceback as _tb
-    call_id = _uuid.uuid4().hex[:8]
-    caller_line = "".join(_tb.format_stack()[-3:-1]).replace("\n", " | ")
-    logger.warning(
-        "PUSH_CALL call_id=%s method=push_message target=%s preview=%r caller=%s",
-        call_id, target_id, text[:60], caller_line,
-    )
+    logger.info("Push → %s", target_id)
     try:
         api = _messaging_api()
         api.push_message(
@@ -350,9 +343,9 @@ def push(target_id: str, text: str) -> None:
                 messages=[TextMessage(type="text", text=text)],
             )
         )
-        logger.warning("PUSH_OK call_id=%s target=%s", call_id, target_id)
+        logger.info("Push sent OK → %s", target_id)
     except Exception as e:
-        logger.error("PUSH_FAIL call_id=%s: %s", call_id, e, exc_info=True)
+        logger.error("Push failed → %s: %s", target_id, e, exc_info=True)
         raise
 
 
@@ -367,47 +360,38 @@ def handle_message(event: MessageEvent) -> None:
 
 def _handle_message_inner(event: MessageEvent) -> None:
     if not isinstance(event.message, TextMessageContent):
-        logger.info("HANDLER non-text message type=%s — skipped", type(event.message).__name__)
         return
 
     text: str = event.message.text.strip()
     reply_token: str = event.reply_token
-    logger.info("HANDLER raw text=%r reply_token=%s…", text, reply_token[:8])
-
     ctx = _get_context(event)
     user_id = ctx["user_id"]
     group_id = ctx["group_id"]
     chat_type = ctx["chat_type"]
     display_name = ctx["display_name"]
     in_group = bool(group_id)
-    logger.info("HANDLER context user=%s display=%r chat=%s group=%s", user_id, display_name, chat_type, group_id or "-")
 
     settings = get_settings()
     cmd = text.split("\n")[0].strip().lower()
-    logger.info("HANDLER cmd=%r", cmd)
+    logger.info("cmd=%r user=%s", cmd, user_id)
 
     # ── /help ─────────────────────────────────────────────────────────────────
     if cmd == "/help":
-        logger.info("HANDLER matched /help")
         reply(reply_token, HELP_TEXT)
         return
 
     # ── /add ──────────────────────────────────────────────────────────────────
     if cmd.startswith("/add"):
-        logger.info("HANDLER matched /add — parsing")
         parsed = _parse_add_multiline(text) or _parse_add_inline(text)
         if not parsed:
-            logger.warning("HANDLER /add parse failed — text=%r", text)
             reply(reply_token, "❌ รูปแบบไม่ถูกต้อง\n\nพิมพ์ /help เพื่อดูวิธีใช้งาน")
             return
 
-        logger.info("HANDLER /add parsed=%s", parsed)
         try:
             event_dt = datetime.strptime(
                 f"{parsed['event_date']} {parsed['event_time']}", "%Y-%m-%d %H:%M"
             )
         except ValueError:
-            logger.warning("HANDLER /add invalid datetime date=%r time=%r", parsed.get("event_date"), parsed.get("event_time"))
             reply(reply_token, "❌ วันที่หรือเวลาไม่ถูกต้อง\nรูปแบบ: YYYY-MM-DD และ HH:MM")
             return
 
@@ -430,19 +414,18 @@ def _handle_message_inner(event: MessageEvent) -> None:
             group_id=group_id,
             chat_type=chat_type,
         )
-        logger.info("HANDLER /add writing to Sheets — req=%s", req.model_dump())
         try:
             created = sheets.create_event(req)
-            logger.info("HANDLER /add Sheets write OK — event_id=%s", created.id)
+            logger.info("Event created — %s by %s", created.id, user_id)
         except Exception as e:
-            logger.error("HANDLER /add Sheets write FAILED: %s", e, exc_info=True)
+            logger.error("create_event failed: %s", e, exc_info=True)
             reply(reply_token, f"❌ บันทึกงานไม่สำเร็จ: {e}")
             return
         try:
             from .scheduler import schedule_event_reminder
             schedule_event_reminder(created)
         except Exception as e:
-            logger.error("HANDLER /add schedule_event_reminder failed: %s", e)
+            logger.error("schedule_event_reminder failed: %s", e)
         reply(reply_token, _fmt_event_created(created, added_by=display_name if in_group else ""))
         return
 
