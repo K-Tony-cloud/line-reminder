@@ -107,42 +107,40 @@ def _get_context(event: MessageEvent) -> dict:
 HELP_TEXT = """📅 ระบบแจ้งเตือนงาน
 
 ━━━━━━━━━━━━━━━━━━━
-📌 คำสั่งที่ใช้ได้
+📌 คำสั่งพื้นฐาน
 ━━━━━━━━━━━━━━━━━━━
 
-/add — เพิ่มงานใหม่
-/list — ดูรายการงานทั้งหมด
-/today — ดูงานวันนี้
-/delete <ID> — ยกเลิกงาน
-/help — แสดงวิธีใช้งาน
+✅ เพิ่มงานแบบรวดเร็ว (แนะนำ)
+/add ชื่องาน วันที่ เวลา สถานที่ เตือน X นาที
+
+ตัวอย่าง:
+• /add ประชุมจราจร พรุ่งนี้ 14:00 ห้องประชุม เตือน 30 นาที
+• /add ตรวจพื้นที่ วันนี้ 18:00 สน. เตือน 1 ชม
+• /add ประชุมทีม 20 พ.ค. 09:30 ห้อง A
+
+วันที่รองรับ: วันนี้ / พรุ่งนี้ / มะรืน / จันทร์–อาทิตย์ / DD พ.ค. / DD/MM
 
 ━━━━━━━━━━━━━━━━━━━
-📝 วิธีเพิ่มงาน (/add)
-━━━━━━━━━━━━━━━━━━━
-
-/add
-เรื่อง: ชื่องาน
-วันที่: YYYY-MM-DD
-เวลา: HH:MM
-สถานที่: ห้องประชุม (ไม่บังคับ)
-ผู้รับผิดชอบ: ชื่อ1|ชื่อ2 (ไม่บังคับ)
-ผู้เข้าร่วม: ชื่อ1|ชื่อ2 (ไม่บังคับ)
-รายละเอียด: ข้อความ (ไม่บังคับ)
-แจ้งเตือน: 60 (นาที, ไม่บังคับ)
-
-━━━━━━━━━━━━━━━━━━━
-💡 ตัวอย่าง
+📝 เพิ่มงานแบบละเอียด
 ━━━━━━━━━━━━━━━━━━━
 
 /add
 เรื่อง: ประชุมจราจร
-วันที่: 2026-05-15
+วันที่: 2026-05-20
 เวลา: 14:00
-สถานที่: ห้องประชุมชั้น 2
-ผู้รับผิดชอบ: สว.จร.|รอง สว.
-ผู้เข้าร่วม: ชุดสายตรวจ|เจ้าหน้าที่เวร
-รายละเอียด: เตรียมเอกสารรายงาน
-แจ้งเตือน: 60
+สถานที่: ห้องประชุม (ไม่บังคับ)
+ผู้รับผิดชอบ: ชื่อ1|ชื่อ2 (ไม่บังคับ)
+ผู้เข้าร่วม: ชื่อ1|ชื่อ2 (ไม่บังคับ)
+รายละเอียด: ข้อความ (ไม่บังคับ)
+แจ้งเตือน: 30
+
+━━━━━━━━━━━━━━━━━━━
+📋 คำสั่งอื่น
+━━━━━━━━━━━━━━━━━━━
+
+/list — ดูงานทั้งหมด
+/today — ดูงานวันนี้
+/delete ID — ลบงาน
 
 💬 ใช้งานได้ทั้งในแชทส่วนตัวและกลุ่ม"""
 
@@ -341,6 +339,7 @@ def _parse_add_natural(text: str) -> dict | None:
 
     # ── 1. Extract reminder ────────────────────────────────────────────────────
     reminder_minutes = None
+    reminder_raw = None
     _HOUR_UNITS = ("ชั่วโมง", "ชม", "hour", "hr")
     _rem_pat = (
         r"(?:เตือน|remind)\s+(\d+)\s*"
@@ -350,6 +349,7 @@ def _parse_add_natural(text: str) -> dict | None:
     if rm:
         val, unit = int(rm.group(1)), rm.group(2).lower().rstrip(".")
         reminder_minutes = val * 60 if any(unit.startswith(u) for u in _HOUR_UNITS) else val
+        reminder_raw = rm.group(0)
         body = (body[: rm.start()] + body[rm.end():]).strip()
 
     # ── 2. Extract time (HH:MM) ────────────────────────────────────────────────
@@ -440,8 +440,10 @@ def _parse_add_natural(text: str) -> dict | None:
         result["reminder_minutes"] = reminder_minutes
 
     logger.info(
-        "PARSER natural: title=%r date=%s time=%s reminder=%s location=%r",
-        event_name, event_date, event_time, reminder_minutes, location or "",
+        "PARSER natural: title=%r date=%s time=%s "
+        "reminder_raw=%r reminder_minutes=%s location=%r",
+        event_name, event_date, event_time,
+        reminder_raw, reminder_minutes, location or "",
     )
     return result
 
@@ -530,7 +532,7 @@ def _handle_message_inner(event: MessageEvent) -> None:
 
     # ── /add ──────────────────────────────────────────────────────────────────
     if cmd.startswith("/add"):
-        parsed = _parse_add_multiline(text) or _parse_add_natural(text) or _parse_add_inline(text)
+        parsed = _parse_add_natural(text) or _parse_add_multiline(text) or _parse_add_inline(text)
         if not parsed:
             reply(reply_token, _PARSE_ERROR_MSG)
             return
