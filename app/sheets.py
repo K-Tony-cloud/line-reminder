@@ -26,13 +26,27 @@ COL_RANGE = "A:P"                   # A=1 … P=16
 def get_google_credentials(scopes=SCOPES):
     import json
     import os
+    import traceback
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
+    cred_file = get_settings().google_credentials_file
+    logger.info(
+        "CREDS_DEBUG caller=%s GOOGLE_CREDENTIALS_JSON_set=%s GOOGLE_CREDENTIALS_JSON_type=%s "
+        "GOOGLE_CREDENTIALS_JSON_preview=%r cred_file_type=%s cred_file_preview=%r",
+        "".join(traceback.format_stack()[-3:-1]).replace("\n", " | "),
+        bool(creds_json),
+        type(creds_json).__name__,
+        creds_json[:60] if creds_json else "",
+        type(cred_file).__name__,
+        cred_file[:60],
+    )
     if creds_json:
+        logger.info("CREDS_DEBUG method=from_service_account_info")
         return service_account.Credentials.from_service_account_info(
             json.loads(creds_json), scopes=scopes
         )
+    logger.info("CREDS_DEBUG method=from_service_account_file path=%r", cred_file)
     return service_account.Credentials.from_service_account_file(
-        get_settings().google_credentials_file, scopes=scopes
+        cred_file, scopes=scopes
     )
 
 
