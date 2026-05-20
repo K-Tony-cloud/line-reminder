@@ -203,7 +203,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         run_backup,
         trigger="cron",
-        hour=0,
+        hour=2,
         minute=0,
         id="run_backup",
         replace_existing=True,
