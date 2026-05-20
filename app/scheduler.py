@@ -107,9 +107,12 @@ def unschedule_event_reminder(event_id: str) -> None:
         logger.info("UNSCHEDULED job=%s", job_id)
 
 
-def sync_event_reminders() -> None:
-    """On startup: remove stale reminder jobs, re-schedule all future active events."""
-    # Remove all existing per-event reminder jobs
+def sync_scheduler_from_sheets() -> None:
+    """Rebuild all reminder jobs from Google Sheets on startup.
+
+    Ensures reminder jobs survive Railway restarts/redeploys.
+    Must be called after scheduler.start() and after Sheets connection is verified.
+    """
     removed = 0
     for job in scheduler.get_jobs():
         if job.id.startswith("reminder:"):
@@ -119,24 +122,22 @@ def sync_event_reminders() -> None:
     try:
         active = get_active_events()
     except Exception as e:
-        logger.error("SYNC failed — could not fetch active events: %s", e)
+        logger.error("SYNC: failed to load events from Sheets — %s", e)
         return
+
+    logger.info("SYNC: loaded %d active events from Sheets (removed %d stale jobs)", len(active), removed)
 
     now = now_bkk().replace(tzinfo=None)
     scheduled = 0
     skipped = 0
     for event in active:
-        reminder_dt = event.reminder_datetime()
-        if reminder_dt > now:
+        if event.reminder_datetime() > now:
             schedule_event_reminder(event)
             scheduled += 1
         else:
             skipped += 1
 
-    logger.info(
-        "SYNC complete — removed=%d active=%d scheduled=%d past=%d",
-        removed, len(active), scheduled, skipped,
-    )
+    logger.info("SYNC: complete — jobs_recreated=%d skipped_expired=%d", scheduled, skipped)
     _log_jobs()
 
 

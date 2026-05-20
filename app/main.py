@@ -11,7 +11,7 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent
 
 from .config import get_settings, Settings
-from .scheduler import start_scheduler, stop_scheduler, send_daily_summary, sync_event_reminders, schedule_event_reminder
+from .scheduler import start_scheduler, stop_scheduler, send_daily_summary, sync_scheduler_from_sheets, schedule_event_reminder
 from .line_bot import handle_message
 from .models import CreateEventRequest, UpdateEventRequest
 from . import sheets
@@ -26,25 +26,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("STARTUP: server initializing", flush=True)
-
-    # Start scheduler immediately so server is ready fast
-    if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
-        print("STARTUP: starting scheduler", flush=True)
-        start_scheduler()
-        print("STARTUP: syncing event reminders from Sheets", flush=True)
-        try:
-            sync_event_reminders()
-        except Exception as e:
-            logger.error("STARTUP: sync_event_reminders failed: %s", e)
-        print("STARTUP: scheduler started", flush=True)
-    else:
-        print("STARTUP: scheduler disabled — worker handles reminders", flush=True)
-
-    print("STARTUP: server ready — yielding to uvicorn", flush=True)
-    yield
-
-    # Sheets init runs in background after server is up
     print("STARTUP: verifying Google Sheets connection", flush=True)
     try:
         sheets.ensure_sheet_exists()
@@ -53,6 +34,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Google Sheets init failed: %s", e)
         print(f"STARTUP: Google Sheets FAILED — {e}", flush=True)
+
+    if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
+        print("STARTUP: starting scheduler", flush=True)
+        start_scheduler()
+        print("STARTUP: syncing reminder jobs from Sheets", flush=True)
+        try:
+            sync_scheduler_from_sheets()
+        except Exception as e:
+            logger.error("STARTUP: sync_scheduler_from_sheets failed: %s", e)
+    else:
+        print("STARTUP: scheduler disabled", flush=True)
+
+    print("STARTUP: ready", flush=True)
+    yield
 
     stop_scheduler()
     print("STARTUP: shutdown complete", flush=True)
