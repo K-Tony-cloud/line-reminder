@@ -17,6 +17,9 @@ scheduler = AsyncIOScheduler()
 # Cleared of stale dates each run so it stays small.
 _sent_summaries: set[str] = set()
 
+# Dedup guard for reminders: event IDs pushed this session.
+# Prevents duplicate pushes when Sheets status hasn't propagated yet.
+_sent_reminders: set[str] = set()
 
 REMINDER_WINDOW_MINUTES = 5
 
@@ -32,6 +35,10 @@ async def _check_and_send_reminders() -> None:
 
     for event in events:
         try:
+            if event.id in _sent_reminders:
+                logger.debug("Event %s already pushed this session — skipping", event.id)
+                continue
+
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
             event_dt = event.event_datetime().replace(second=0, microsecond=0)
             window_end = reminder_dt + timedelta(minutes=REMINDER_WINDOW_MINUTES)
@@ -60,6 +67,7 @@ async def _check_and_send_reminders() -> None:
                 now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
             )
             push(target, _fmt_reminder(event))
+            _sent_reminders.add(event.id)
             mark_reminder_sent(event.id)
             logger.info("Reminder sent and marked as sent — event %s", event.id)
 
