@@ -138,4 +138,5 @@ def start_scheduler() -> None:
 
 
 def stop_scheduler() -> None:
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)

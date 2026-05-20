@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Depends
@@ -9,10 +10,11 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent
 
 from .config import get_settings, Settings
-from .scheduler import start_scheduler, stop_scheduler
+from .scheduler import start_scheduler, stop_scheduler, _send_daily_summaries
 from .line_bot import handle_message
 from .models import CreateEventRequest, UpdateEventRequest
 from . import sheets
+from .backup import backup_events
 
 # Resolve paths relative to this file so they work regardless of working dir
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,7 +32,10 @@ async def lifespan(app: FastAPI):
         logger.info("Google Sheets connection verified")
     except Exception as e:
         logger.error("Google Sheets init failed: %s", e)
-    start_scheduler()
+    if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
+        start_scheduler()
+    else:
+        logger.info("Scheduler disabled — worker service handles reminders")
     yield
     stop_scheduler()
 
@@ -101,6 +106,22 @@ async def update_event(event_id: str, req: UpdateEventRequest):
 async def delete_event(event_id: str):
     if not sheets.delete_event(event_id.upper()):
         raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.post("/api/daily-summary")
+async def trigger_daily_summary():
+    await _send_daily_summaries()
+    return {"status": "ok"}
+
+
+@app.post("/api/backup")
+async def trigger_backup():
+    try:
+        return backup_events()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/health")
