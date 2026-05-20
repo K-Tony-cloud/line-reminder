@@ -33,10 +33,12 @@ def _thai_date(date_str: str) -> str:
 
 
 def _thai_duration(minutes: int) -> str:
-    if minutes < 60:
-        return f"{minutes} นาที"
-    hours, mins = divmod(minutes, 60)
-    return f"{hours} ชั่วโมง" if mins == 0 else f"{hours} ชั่วโมง {mins} นาที"
+    if minutes >= 1440 and minutes % 1440 == 0:
+        return f"{minutes // 1440} วัน"
+    if minutes >= 60:
+        hours, mins = divmod(minutes, 60)
+        return f"{hours} ชั่วโมง" if mins == 0 else f"{hours} ชั่วโมง {mins} นาที"
+    return f"{minutes} นาที"
 
 
 def _bullet_list(items: list[str]) -> str:
@@ -260,6 +262,31 @@ _FIELD_MAP = {
     "แจ้งเตือน": "reminder",  "remind": "reminder",
 }
 
+# ─── Reminder parsing utility ─────────────────────────────────────────────────
+
+# Unit alternation used in both parsers — order matters (longest match first)
+_REM_UNIT_RE = r"ชั่วโมง|ชม\.?|นาที|น\.?|วัน|hours?|hr\.?|days?|mins?(?:ute)?s?"
+_REM_HOUR_PREFIX = ("ชั่วโมง", "ชม", "hour", "hr")
+_REM_DAY_PREFIX = ("วัน", "day")
+
+
+def _reminder_text_to_minutes(text: str) -> int | None:
+    """Convert 'N unit' or plain integer string to minutes. Returns None if unparseable."""
+    text = text.strip()
+    m = re.match(rf"^(\d+)\s*({_REM_UNIT_RE})$", text, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2).lower().rstrip(".")
+        if any(unit.startswith(u) for u in _REM_DAY_PREFIX):
+            return val * 1440
+        if any(unit.startswith(u) for u in _REM_HOUR_PREFIX):
+            return val * 60
+        return val
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
 
 def _parse_add_multiline(text: str) -> dict | None:
     lines = text.strip().splitlines()
@@ -288,10 +315,9 @@ def _parse_add_multiline(text: str) -> dict | None:
             )
 
     if "reminder" in parsed:
-        try:
-            parsed["reminder_minutes"] = int(parsed.pop("reminder"))
-        except ValueError:
-            parsed.pop("reminder", None)
+        mins = _reminder_text_to_minutes(parsed.pop("reminder"))
+        if mins is not None:
+            parsed["reminder_minutes"] = mins
 
     return parsed
 
@@ -337,19 +363,14 @@ def _parse_add_natural(text: str) -> dict | None:
     if not body:
         return None
 
-    # ── 1. Extract reminder ────────────────────────────────────────────────────
+    # ── 1. Extract reminder (keyword: เตือน/remind + duration) ───────────────
     reminder_minutes = None
     reminder_raw = None
-    _HOUR_UNITS = ("ชั่วโมง", "ชม", "hour", "hr")
-    _rem_pat = (
-        r"(?:เตือน|remind)\s+(\d+)\s*"
-        r"(ชั่วโมง|ชม\.?|นาที|น\.?|hours?|hr\.?|mins?(?:ute)?s?)"
-    )
-    rm = re.search(_rem_pat, body, re.IGNORECASE)
+    _rem_kw_re = rf"(?:เตือน|remind)\s*(\d+\s*(?:{_REM_UNIT_RE}))"
+    rm = re.search(_rem_kw_re, body, re.IGNORECASE)
     if rm:
-        val, unit = int(rm.group(1)), rm.group(2).lower().rstrip(".")
-        reminder_minutes = val * 60 if any(unit.startswith(u) for u in _HOUR_UNITS) else val
         reminder_raw = rm.group(0)
+        reminder_minutes = _reminder_text_to_minutes(rm.group(1))
         body = (body[: rm.start()] + body[rm.end():]).strip()
 
     # ── 2. Extract time (HH:MM) ────────────────────────────────────────────────
@@ -425,6 +446,17 @@ def _parse_add_natural(text: str) -> dict | None:
     # ── 4. Title = cleaned before-time remnant; Location = after-time remnant ──
     event_name = " ".join(date_remaining.split()).strip()
     location = " ".join(after_time.split()).strip()
+
+    # ── 5. Bare-unit fallback: strip trailing duration from location ──────────
+    # Catches "ห้องประชุม 30นาที" when เตือน keyword was omitted
+    if reminder_minutes is None and location:
+        bare = re.search(rf"(\d+\s*(?:{_REM_UNIT_RE}))\s*$", location, re.IGNORECASE)
+        if bare:
+            mins = _reminder_text_to_minutes(bare.group(1))
+            if mins is not None:
+                reminder_minutes = mins
+                reminder_raw = bare.group(1)
+                location = location[: bare.start()].strip()
 
     if not event_name:
         return None
