@@ -442,8 +442,4 @@ def handle_message(event: MessageEvent) -> None:
         )
         return
 
-    # ── unknown ───────────────────────────────────────────────────────────────
-    reply(
-        reply_token,
-        "👋 สวัสดี! ฉันคือระบบแจ้งเตือนงาน\nพิมพ์ /help เพื่อดูคำสั่งที่ใช้ได้",
-    )
+    # Non-command messages are silently ignored — bot stays quiet in group chats
