@@ -12,15 +12,21 @@ logger = logging.getLogger(__name__)
 BKK = ZoneInfo("Asia/Bangkok")
 scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
+# In-process dedup: (event_id, reminder_minute) — second guard after Sheets status check
+_sent_reminders: set[tuple[str, str]] = set()
+
 
 async def check_reminders() -> None:
     """Poll active events and dispatch any due reminders.
 
-    Stateless — Google Sheets status=active is the only lock.
-    Mark as sent BEFORE pushing to guarantee at-most-once delivery.
+    Two-layer at-most-once delivery:
+      1. Sheets status=sent (survives restarts, guards against multiple instances)
+      2. _sent_reminders in-process set (guards against same-process double-fire)
+    Mark Sheets BEFORE pushing to guarantee delivery order.
     """
     now = datetime.now(BKK).replace(tzinfo=None, second=0, microsecond=0)
-    logger.info("Reminder check — Bangkok: %s", now.strftime("%Y-%m-%d %H:%M"))
+    now_key = now.strftime("%Y-%m-%d %H:%M")
+    logger.info("Reminder check — Bangkok: %s", now_key)
 
     try:
         active = get_active_events()
@@ -37,18 +43,25 @@ async def check_reminders() -> None:
     logger.info("Active: %d | Due: %d", len(active), len(due))
 
     for event in due:
+        dedup_key = (event.id, now_key)
+        if dedup_key in _sent_reminders:
+            logger.warning("SKIP %s — already sent this minute (in-process dedup)", event.id)
+            continue
+
         try:
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
             ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
             logger.info(
-                "Dispatching %s ('%s') → %s | reminder=%s event=%s",
+                "Dispatching %s ('%s') → %s | reminder=%s event=%s target=%s",
                 event.id, event.event_name, ctx,
-                reminder_dt.strftime("%H:%M"), event.event_time,
+                reminder_dt.strftime("%Y-%m-%d %H:%M"), event.event_time, event.target_id,
             )
+            _sent_reminders.add(dedup_key)
             mark_reminder_sent(event.id)
             push(event.target_id, _fmt_reminder(event))
-            logger.info("Delivered — %s", event.id)
+            logger.info("Delivered — %s at %s → %s", event.id, now_key, event.target_id)
         except Exception as e:
+            _sent_reminders.discard(dedup_key)
             logger.error("Failed — %s: %s", event.id, e)
 
 
@@ -89,11 +102,16 @@ async def send_daily_summary() -> None:
 
 
 def start_scheduler() -> None:
+    if scheduler.running:
+        logger.warning("SCHEDULER already running — skipping duplicate start")
+        _log_jobs()
+        return
+
     scheduler.add_job(
         check_reminders,
         trigger="cron",
         minute="*",
-        id="reminders",
+        id="check_reminders",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -104,7 +122,7 @@ def start_scheduler() -> None:
         trigger="cron",
         hour=6,
         minute=0,
-        id="daily_summary",
+        id="send_daily_summary",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -114,15 +132,24 @@ def start_scheduler() -> None:
         trigger="cron",
         hour=0,
         minute=0,
-        id="daily_backup",
+        id="run_backup",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
     scheduler.start()
-    logger.info("Scheduler started — reminders every minute, summary 06:00, backup 00:00")
+    logger.info("SCHEDULER started")
+    _log_jobs()
+
+
+def _log_jobs() -> None:
+    jobs = scheduler.get_jobs()
+    logger.info("SCHEDULER registered jobs (%d):", len(jobs))
+    for job in jobs:
+        logger.info("  job id=%s func=%s next_run=%s", job.id, job.func.__name__, job.next_run_time)
 
 
 def stop_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
+        logger.info("SCHEDULER stopped")
