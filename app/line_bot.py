@@ -1,6 +1,6 @@
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from .utils import now_bkk
 from linebot.v3.messaging import (
@@ -311,6 +311,152 @@ def _parse_add_inline(text: str) -> dict | None:
     }
 
 
+# Pre-compile month pattern for natural parser
+_THAI_MONTH_PAT = "|".join(re.escape(m) for m in _THAI_MONTHS)
+
+_WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+    "จันทร์": 0, "อังคาร": 1, "พุธ": 2,
+    "พฤหัส": 3, "พฤหัสบดี": 3,
+    "ศุกร์": 4, "เสาร์": 5, "อาทิตย์": 6,
+}
+_WEEKDAY_PAT = "|".join(sorted(_WEEKDAY_MAP.keys(), key=len, reverse=True))
+
+
+def _parse_add_natural(text: str) -> dict | None:
+    """Natural-language single-line parser.
+
+    Supports:
+      /add ประชุมจราจร พรุ่งนี้ 14:00 ห้องประชุม เตือน 30 นาที
+      /add ตรวจพื้นที่ 20 พ.ค. 09:00 สน. เตือน 1 ชม
+      /add เวรเช้า Monday 06:00 เตือน 1 hour
+    """
+    first_line = text.strip().splitlines()[0]
+    if not first_line.lower().startswith("/add"):
+        return None
+    body = first_line[4:].strip()
+    if not body:
+        return None
+
+    # ── 1. Extract reminder ────────────────────────────────────────────────────
+    reminder_minutes = None
+    _HOUR_UNITS = ("ชั่วโมง", "ชม", "hour", "hr")
+    _rem_pat = (
+        r"(?:เตือน|remind)\s+(\d+)\s*"
+        r"(ชั่วโมง|ชม\.?|นาที|น\.?|hours?|hr\.?|mins?(?:ute)?s?)"
+    )
+    rm = re.search(_rem_pat, body, re.IGNORECASE)
+    if rm:
+        val, unit = int(rm.group(1)), rm.group(2).lower().rstrip(".")
+        reminder_minutes = val * 60 if any(unit.startswith(u) for u in _HOUR_UNITS) else val
+        body = (body[: rm.start()] + body[rm.end():]).strip()
+
+    # ── 2. Extract time (HH:MM) ────────────────────────────────────────────────
+    tm = re.search(r"\b(\d{1,2}:\d{2})\b", body)
+    if not tm:
+        return None
+    raw_time = tm.group(1)
+    h, mi = raw_time.split(":")
+    event_time = f"{int(h):02d}:{mi}"
+    before_time = body[: tm.start()].strip()
+    after_time = body[tm.end():].strip()
+
+    # ── 3. Extract date from before_time ──────────────────────────────────────
+    today = now_bkk().date()
+    event_date = None
+    date_remaining = before_time
+
+    def _resolve_dmy(day: int, month: int) -> str:
+        year = today.year
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            return ""
+        if candidate < today:
+            candidate = date(year + 1, month, day)
+        return candidate.strftime("%Y-%m-%d")
+
+    # Thai/English keywords
+    kw_patterns = [
+        (r"วันนี้|today", lambda: today.strftime("%Y-%m-%d")),
+        (r"พรุ่งนี้|tomorrow", lambda: (today + timedelta(days=1)).strftime("%Y-%m-%d")),
+        (r"มะรืน", lambda: (today + timedelta(days=2)).strftime("%Y-%m-%d")),
+    ]
+    for pat, resolver in kw_patterns:
+        km = re.search(pat, before_time, re.IGNORECASE)
+        if km:
+            event_date = resolver()
+            date_remaining = (before_time[: km.start()] + before_time[km.end():]).strip()
+            break
+
+    # Weekday names
+    if not event_date:
+        wm = re.search(rf"\b({_WEEKDAY_PAT})\b", before_time, re.IGNORECASE)
+        if wm:
+            wd_key = next((k for k in _WEEKDAY_MAP if k.lower() == wm.group(1).lower()), None)
+            if wd_key is not None:
+                target = _WEEKDAY_MAP[wd_key]
+                days_ahead = (target - today.weekday()) % 7 or 7
+                event_date = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                date_remaining = (before_time[: wm.start()] + before_time[wm.end():]).strip()
+
+    # DD THAI_MONTH (e.g. "20 พ.ค.")
+    if not event_date:
+        tdm = re.search(rf"\b(\d{{1,2}})\s*({_THAI_MONTH_PAT})", before_time)
+        if tdm:
+            day = int(tdm.group(1))
+            month = _THAI_MONTHS.index(tdm.group(2)) + 1
+            event_date = _resolve_dmy(day, month)
+            date_remaining = (before_time[: tdm.start()] + before_time[tdm.end():]).strip()
+
+    # DD/MM or DD-MM
+    if not event_date:
+        slm = re.search(r"\b(\d{1,2})[/\-](\d{1,2})\b", before_time)
+        if slm:
+            day, month = int(slm.group(1)), int(slm.group(2))
+            if 1 <= day <= 31 and 1 <= month <= 12:
+                event_date = _resolve_dmy(day, month)
+                date_remaining = (before_time[: slm.start()] + before_time[slm.end():]).strip()
+
+    if not event_date:
+        return None
+
+    # ── 4. Title = cleaned before-time remnant; Location = after-time remnant ──
+    event_name = " ".join(date_remaining.split()).strip()
+    location = " ".join(after_time.split()).strip()
+
+    if not event_name:
+        return None
+
+    result: dict = {
+        "event_name": event_name,
+        "event_date": event_date,
+        "event_time": event_time,
+    }
+    if location:
+        result["location"] = location
+    if reminder_minutes is not None:
+        result["reminder_minutes"] = reminder_minutes
+
+    logger.info(
+        "PARSER natural: title=%r date=%s time=%s reminder=%s location=%r",
+        event_name, event_date, event_time, reminder_minutes, location or "",
+    )
+    return result
+
+
+_PARSE_ERROR_MSG = (
+    "❌ อ่านข้อมูลไม่ครบ กรุณาลองใหม่\n\n"
+    "ตัวอย่าง:\n"
+    "/add ประชุม พรุ่งนี้ 14:00 ห้องประชุม เตือน 30 นาที\n"
+    "/add ตรวจพื้นที่ 20 พ.ค. 09:00 สน. เตือน 1 ชม\n"
+    "/add เวรเช้า Monday 06:00 เตือน 1 hour\n\n"
+    "หรือใช้รูปแบบละเอียด:\n"
+    "/add\nเรื่อง: ชื่องาน\nวันที่: 2026-05-20\nเวลา: 14:00\nแจ้งเตือน: 60"
+)
+
+
 # ─── LINE API helpers ─────────────────────────────────────────────────────────
 
 def _messaging_api() -> MessagingApi:
@@ -384,9 +530,9 @@ def _handle_message_inner(event: MessageEvent) -> None:
 
     # ── /add ──────────────────────────────────────────────────────────────────
     if cmd.startswith("/add"):
-        parsed = _parse_add_multiline(text) or _parse_add_inline(text)
+        parsed = _parse_add_multiline(text) or _parse_add_natural(text) or _parse_add_inline(text)
         if not parsed:
-            reply(reply_token, "❌ รูปแบบไม่ถูกต้อง\n\nพิมพ์ /help เพื่อดูวิธีใช้งาน")
+            reply(reply_token, _PARSE_ERROR_MSG)
             return
 
         try:
