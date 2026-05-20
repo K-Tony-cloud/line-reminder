@@ -2,6 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,13 +11,12 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent
 
 from .config import get_settings, Settings
-from .scheduler import start_scheduler, stop_scheduler, _send_daily_summaries
+from .scheduler import start_scheduler, stop_scheduler, send_daily_summary
 from .line_bot import handle_message
 from .models import CreateEventRequest, UpdateEventRequest
 from . import sheets
 from .backup import backup_events
 
-# Resolve paths relative to this file so they work regardless of working dir
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
@@ -26,16 +26,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
     try:
         sheets.ensure_sheet_exists()
-        logger.info("Google Sheets connection verified")
+        logger.info("Google Sheets OK")
     except Exception as e:
         logger.error("Google Sheets init failed: %s", e)
+
+    # Production (Render): DISABLE_SCHEDULER=true — worker.py handles reminders
+    # Local dev: scheduler runs inside the web process
     if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
         start_scheduler()
     else:
         logger.info("Scheduler disabled — worker service handles reminders")
+
     yield
     stop_scheduler()
 
@@ -48,13 +51,10 @@ def get_webhook_handler(settings: Settings = Depends(get_settings)) -> WebhookHa
     return WebhookHandler(settings.line_channel_secret)
 
 
-# ─── LINE Webhook ───────────────────────────────────────────────────────────
-
 @app.post("/webhook")
 async def webhook(request: Request, settings: Settings = Depends(get_settings)):
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
-
     handler = WebhookHandler(settings.line_channel_secret)
 
     @handler.add(MessageEvent)
@@ -65,18 +65,13 @@ async def webhook(request: Request, settings: Settings = Depends(get_settings)):
         handler.handle(body.decode("utf-8"), signature)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
-
     return {"status": "ok"}
 
-
-# ─── Dashboard UI ────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
-
-# ─── REST API for Dashboard ──────────────────────────────────────────────────
 
 @app.get("/api/events")
 async def list_events(status: str | None = None, user_id: str | None = None):
@@ -110,7 +105,7 @@ async def delete_event(event_id: str):
 
 @app.post("/api/daily-summary")
 async def trigger_daily_summary():
-    await _send_daily_summaries()
+    await send_daily_summary()
     return {"status": "ok"}
 
 
