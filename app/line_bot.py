@@ -1,6 +1,8 @@
 import re
 import logging
 from datetime import datetime
+
+from .utils import now_bkk
 from linebot.v3.messaging import (
     ApiClient, MessagingApi, Configuration,
     ReplyMessageRequest, PushMessageRequest,
@@ -395,7 +397,7 @@ def _handle_message_inner(event: MessageEvent) -> None:
             reply(reply_token, "❌ วันที่หรือเวลาไม่ถูกต้อง\nรูปแบบ: YYYY-MM-DD และ HH:MM")
             return
 
-        if event_dt <= datetime.now():
+        if event_dt <= now_bkk().replace(tzinfo=None):
             reply(reply_token, "❌ กรุณาระบุวันที่และเวลาในอนาคต")
             return
 
@@ -446,7 +448,7 @@ def _handle_message_inner(event: MessageEvent) -> None:
 
     # ── /today ────────────────────────────────────────────────────────────────
     if cmd == "/today":
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = now_bkk().strftime("%Y-%m-%d")
         if in_group:
             events = sheets.get_events_for_group(group_id)
         else:

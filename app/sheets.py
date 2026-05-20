@@ -1,11 +1,11 @@
 import uuid
 import logging
-from datetime import datetime
 from typing import Optional
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .utils import now_bkk
 from .models import Event, EventStatus, CreateEventRequest, UpdateEventRequest
 from .config import get_settings
 
@@ -154,7 +154,7 @@ def create_event(req: CreateEventRequest) -> Event:
         event_time=req.event_time,
         reminder_minutes=req.reminder_minutes,
         status=EventStatus.active,
-        created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        created_at=now_bkk().strftime("%Y-%m-%d %H:%M:%S"),
         location=req.location,
         responsible=req.responsible,
         participants=req.participants,
@@ -241,8 +241,7 @@ def delete_event(event_id: str) -> bool:
 
 
 def mark_reminder_sent(event_id: str) -> None:
-    from zoneinfo import ZoneInfo
-    now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M:%S")
+    sent_at = now_bkk().strftime("%Y-%m-%d %H:%M:%S")
 
     all_events = get_all_events()
     target = next((e for e in all_events if e.id == event_id), None)
@@ -251,7 +250,7 @@ def mark_reminder_sent(event_id: str) -> None:
         return
 
     target.status = EventStatus.sent
-    target.reminder_sent_at = now_bkk
+    target.reminder_sent_at = sent_at
 
     row_index = next((i + 2 for i, e in enumerate(all_events) if e.id == event_id), None)
     if not row_index:
@@ -260,7 +259,7 @@ def mark_reminder_sent(event_id: str) -> None:
     end_col = COL_RANGE.split(":")[1]
     service = _get_service()
     sid = _spreadsheet_id()
-    logger.info("Marking event %s as sent at %s (row %d)", event_id, now_bkk, row_index)
+    logger.info("Marking event %s as sent at %s (row %d)", event_id, sent_at, row_index)
     try:
         service.spreadsheets().values().update(
             spreadsheetId=sid,

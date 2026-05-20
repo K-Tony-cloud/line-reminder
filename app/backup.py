@@ -1,8 +1,8 @@
 import logging
-from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .utils import now_bkk
 from .sheets import SHEET_NAME, COL_RANGE, _spreadsheet_id, get_google_credentials
 from .config import get_settings
 
@@ -36,7 +36,7 @@ def backup_events() -> dict:
     rows = result.get("values", [])
     logger.info("Backup: read %d rows (including header) from source sheet", len(rows))
 
-    sheet_name = "Backup_" + datetime.now().strftime("%Y_%m_%d")
+    sheet_name = "Backup_" + now_bkk().strftime("%Y_%m_%d")
     backup_sid = _backup_spreadsheet_id()
 
     # Get existing sheets in backup spreadsheet

@@ -1,16 +1,15 @@
 import logging
 import os
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from .utils import BKK, now_bkk
 from .sheets import get_active_events, get_all_events, get_event_by_id, mark_reminder_sent
 from .models import EventStatus
 from .line_bot import push, _fmt_reminder, _fmt_daily_summary
 from .backup import run_backup
 
 logger = logging.getLogger(__name__)
-BKK = ZoneInfo("Asia/Bangkok")
 scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
 # Runtime dedup lock: dedupe_key → sent_at timestamp
@@ -21,7 +20,7 @@ _DEDUP_TTL_SECONDS = 300  # 5 minutes
 
 def _check_dedup(dedupe_key: str) -> bool:
     """Return True if this key was already sent recently (block). False = allow send."""
-    now = datetime.now(BKK).replace(tzinfo=None)
+    now = now_bkk().replace(tzinfo=None)
     # Expire old keys
     expired = [k for k, t in _recent_sends.items() if (now - t).total_seconds() > _DEDUP_TTL_SECONDS]
     for k in expired:
@@ -37,7 +36,7 @@ def _check_dedup(dedupe_key: str) -> bool:
 
 async def _fire_reminder(event_id: str) -> None:
     """APScheduler date-trigger callback for a single event reminder."""
-    now = datetime.now(BKK)
+    now = now_bkk()
     logger.info("Reminder firing — event_id=%s", event_id)
 
     try:
@@ -75,7 +74,7 @@ def schedule_event_reminder(event) -> None:
 
     job_id = f"reminder:{event.id}"
     reminder_dt = event.reminder_datetime()
-    now = datetime.now(BKK).replace(tzinfo=None)
+    now = now_bkk().replace(tzinfo=None)
 
     if reminder_dt <= now:
         logger.info("SCHEDULE SKIP %s — reminder_dt=%s is in the past", event.id, reminder_dt)
@@ -123,7 +122,7 @@ def sync_event_reminders() -> None:
         logger.error("SYNC failed — could not fetch active events: %s", e)
         return
 
-    now = datetime.now(BKK).replace(tzinfo=None)
+    now = now_bkk().replace(tzinfo=None)
     scheduled = 0
     skipped = 0
     for event in active:
@@ -145,7 +144,7 @@ def sync_event_reminders() -> None:
 
 async def send_daily_summary() -> None:
     """Send morning event summary to all targets with active events this week."""
-    now = datetime.now(BKK)
+    now = now_bkk()
     today = now.strftime("%Y-%m-%d")
     week_end = (now + timedelta(days=7)).strftime("%Y-%m-%d")
     logger.info("Daily summary — %s", today)
