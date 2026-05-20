@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 BKK = ZoneInfo("Asia/Bangkok")
 scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
+# Runtime dedup lock: dedupe_key → sent_at timestamp
+# Prevents double-send even if _fire_reminder is somehow called twice
+_recent_sends: dict[str, datetime] = {}
+_DEDUP_TTL_SECONDS = 300  # 5 minutes
+
+
+def _check_dedup(dedupe_key: str) -> bool:
+    """Return True if this key was already sent recently (block). False = allow send."""
+    now = datetime.now(BKK).replace(tzinfo=None)
+    # Expire old keys
+    expired = [k for k, t in _recent_sends.items() if (now - t).total_seconds() > _DEDUP_TTL_SECONDS]
+    for k in expired:
+        del _recent_sends[k]
+    if dedupe_key in _recent_sends:
+        logger.warning("DUPLICATE_BLOCKED key=%r sent_at=%s", dedupe_key, _recent_sends[dedupe_key])
+        return True
+    _recent_sends[dedupe_key] = now
+    return False
+
 
 # ─── Per-event reminder dispatch ──────────────────────────────────────────────
 
@@ -23,15 +42,12 @@ async def _fire_reminder(event_id: str) -> None:
     job_id = f"reminder:{event_id}"
     pid = os.getpid()
 
-    # Dump all current jobs so we can see if duplicates are registered
     all_jobs = scheduler.get_jobs()
     logger.warning(
         "REMINDER_FIRE event_id=%s job_id=%s pid=%d now=%s all_jobs=%s",
         event_id, job_id, pid, now.isoformat(),
         [(j.id, str(j.next_run_time)) for j in all_jobs],
     )
-    logger.warning("REMINDER_FIRE callstack: %s",
-        "".join(traceback.format_stack()[-4:-1]).replace("\n", " | "))
 
     try:
         event = get_event_by_id(event_id)
@@ -43,19 +59,29 @@ async def _fire_reminder(event_id: str) -> None:
         logger.warning("REMINDER %s — not found in Sheets", event_id)
         return
     if event.status != EventStatus.active:
-        logger.warning("REMINDER %s — status=%s SKIP (already sent?)", event_id, event.status.value)
+        logger.warning("REMINDER %s — status=%s SKIP", event_id, event.status.value)
         return
 
+    target_id = event.target_id
+    scheduled_time = now.strftime("%Y-%m-%dT%H:%M")
+    dedupe_key = f"{event_id}:{target_id}:{scheduled_time}"
+
     logger.warning(
-        "REMINDER_SEND event_id=%s target=%s now=%s job_id=%s func=_fire_reminder pid=%d",
-        event_id, event.target_id, now.isoformat(), job_id, pid,
+        "REMINDER_PRE_SEND event_id=%s target=%s dedupe_key=%r method=push_message pid=%d",
+        event_id, target_id, dedupe_key, pid,
     )
+
+    if _check_dedup(dedupe_key):
+        return
+
     try:
         mark_reminder_sent(event_id)
-        push(event.target_id, _fmt_reminder(event))
+        push(target_id, _fmt_reminder(event))
         logger.warning("REMINDER_DONE event_id=%s target=%s sent_at=%s",
-            event_id, event.target_id, datetime.now(BKK).isoformat())
+            event_id, target_id, datetime.now(BKK).isoformat())
     except Exception as e:
+        # Remove dedup key on failure so a retry is possible
+        _recent_sends.pop(dedupe_key, None)
         logger.error("REMINDER FAILED — event_id=%s: %s", event_id, e)
 
 

@@ -335,14 +335,12 @@ def reply(reply_token: str, text: str) -> None:
 
 def push(target_id: str, text: str) -> None:
     import uuid as _uuid
-    import traceback as _traceback
-    from datetime import datetime as _dt
-    from zoneinfo import ZoneInfo as _ZI
+    import traceback as _tb
     call_id = _uuid.uuid4().hex[:8]
-    caller = "".join(_traceback.format_stack()[-4:-1]).replace("\n", " | ")
+    caller_line = "".join(_tb.format_stack()[-3:-1]).replace("\n", " | ")
     logger.warning(
-        "PUSH_CALL call_id=%s target=%s text_preview=%r caller=%s",
-        call_id, target_id, text[:60], caller,
+        "PUSH_CALL call_id=%s method=push_message target=%s preview=%r caller=%s",
+        call_id, target_id, text[:60], caller_line,
     )
     try:
         api = _messaging_api()
@@ -352,8 +350,7 @@ def push(target_id: str, text: str) -> None:
                 messages=[TextMessage(type="text", text=text)],
             )
         )
-        logger.warning("PUSH_OK call_id=%s at=%s", call_id,
-            _dt.now(_ZI("Asia/Bangkok")).isoformat())
+        logger.warning("PUSH_OK call_id=%s target=%s", call_id, target_id)
     except Exception as e:
         logger.error("PUSH_FAIL call_id=%s: %s", call_id, e, exc_info=True)
         raise
