@@ -17,9 +17,10 @@ HEADERS = [
     "ID", "UserID", "DisplayName", "EventName",
     "EventDate", "EventTime", "ReminderMinutes", "Status", "CreatedAt",
     "Location", "Responsible", "Participants", "Details",
-    "GroupID", "ChatType",          # columns N, O
+    "GroupID", "ChatType",           # columns N, O
+    "ReminderSentAt",                # column P — Bangkok timestamp of dispatch
 ]
-COL_RANGE = "A:O"                   # A=1 … O=15
+COL_RANGE = "A:P"                   # A=1 … P=16
 
 
 def _get_service():
@@ -79,6 +80,7 @@ def _row_to_event(row: list) -> Event:
         details=row[12],
         group_id=row[13],
         chat_type=row[14] if row[14] else "user",
+        reminder_sent_at=row[15],
     )
 
 
@@ -88,7 +90,7 @@ def _event_to_row(event: Event) -> list:
         event.event_date, event.event_time, str(event.reminder_minutes),
         event.status.value, event.created_at,
         event.location, event.responsible, event.participants, event.details,
-        event.group_id, event.chat_type,
+        event.group_id, event.chat_type, event.reminder_sent_at,
     ]
 
 
@@ -224,4 +226,33 @@ def delete_event(event_id: str) -> bool:
 
 
 def mark_reminder_sent(event_id: str) -> None:
-    update_event(event_id, UpdateEventRequest(status=EventStatus.sent))
+    from zoneinfo import ZoneInfo
+    now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d %H:%M:%S")
+
+    all_events = get_all_events()
+    target = next((e for e in all_events if e.id == event_id), None)
+    if not target:
+        logger.warning("mark_reminder_sent: event %s not found", event_id)
+        return
+
+    target.status = EventStatus.sent
+    target.reminder_sent_at = now_bkk
+
+    row_index = next((i + 2 for i, e in enumerate(all_events) if e.id == event_id), None)
+    if not row_index:
+        return
+
+    end_col = COL_RANGE.split(":")[1]
+    service = _get_service()
+    sid = _spreadsheet_id()
+    logger.info("Marking event %s as sent at %s (row %d)", event_id, now_bkk, row_index)
+    try:
+        service.spreadsheets().values().update(
+            spreadsheetId=sid,
+            range=f"{SHEET_NAME}!A{row_index}:{end_col}{row_index}",
+            valueInputOption="RAW",
+            body={"values": [_event_to_row(target)]},
+        ).execute()
+    except HttpError as e:
+        logger.error("Sheets API error on mark_reminder_sent: %s", e)
+        raise

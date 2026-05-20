@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,55 +22,57 @@ _sent_summaries: set[str] = set()
 # Prevents duplicate pushes when Sheets status hasn't propagated yet.
 _sent_reminders: set[str] = set()
 
-REMINDER_WINDOW_MINUTES = 5
-
-
 async def _check_and_send_reminders() -> None:
     now = datetime.now(BKK).replace(tzinfo=None, second=0, microsecond=0)
-    logger.info("Reminder check — server time (Bangkok): %s", now.strftime("%Y-%m-%d %H:%M"))
+    logger.info("Reminder check — Bangkok: %s | PID: %d", now.strftime("%Y-%m-%d %H:%M"), os.getpid())
     try:
         events = get_active_events()
     except Exception as e:
         logger.error("Failed to fetch events: %s", e)
         return
 
+    logger.info("Active events to check: %d", len(events))
+
     for event in events:
         try:
+            # In-memory guard: skip if already dispatched this session
             if event.id in _sent_reminders:
-                logger.debug("Event %s already pushed this session — skipping", event.id)
+                logger.debug("Event %s — skipped (in-memory dedup)", event.id)
                 continue
 
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
             event_dt = event.event_datetime().replace(second=0, microsecond=0)
-            window_end = reminder_dt + timedelta(minutes=REMINDER_WINDOW_MINUTES)
+            window_end = reminder_dt + timedelta(minutes=1)
 
             if now < reminder_dt:
                 logger.debug(
-                    "Event %s ('%s') — not yet: now=%s, reminder=%s, event=%s",
+                    "Event %s ('%s') — not yet | now=%s reminder=%s event=%s",
                     event.id, event.event_name,
                     now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
                 )
                 continue
 
             if now >= window_end:
-                logger.warning(
-                    "Event %s ('%s') — window passed: now=%s, reminder=%s, window_end=%s — skipping",
+                logger.debug(
+                    "Event %s ('%s') — window passed | reminder=%s window_end=%s now=%s",
                     event.id, event.event_name,
-                    now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), window_end.strftime("%H:%M"),
+                    reminder_dt.strftime("%H:%M"), window_end.strftime("%H:%M"), now.strftime("%H:%M"),
                 )
                 continue
 
             target = event.target_id
             ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
+
+            # At-most-once: lock in Sheets BEFORE pushing to LINE
+            _sent_reminders.add(event.id)
+            mark_reminder_sent(event.id)
             logger.info(
-                "Sending reminder for event %s ('%s') → %s | now=%s, reminder=%s, event=%s",
+                "Marked sent — dispatching reminder for event %s ('%s') → %s | now=%s reminder=%s event=%s",
                 event.id, event.event_name, ctx,
                 now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
             )
             push(target, _fmt_reminder(event))
-            _sent_reminders.add(event.id)
-            mark_reminder_sent(event.id)
-            logger.info("Reminder sent and marked as sent — event %s", event.id)
+            logger.info("Reminder delivered — event %s", event.id)
 
         except Exception as e:
             logger.error("Error processing event %s: %s", event.id, e)

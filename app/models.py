@@ -24,8 +24,9 @@ class Event(BaseModel):
     responsible: str = ""    # pipe-separated list
     participants: str = ""   # pipe-separated list
     details: str = ""
-    group_id: str = ""       # LINE group/room ID; empty for direct messages
-    chat_type: str = "user"  # "user" | "group" | "room"
+    group_id: str = ""        # LINE group/room ID; empty for direct messages
+    chat_type: str = "user"   # "user" | "group" | "room"
+    reminder_sent_at: str = "" # Bangkok timestamp when reminder was dispatched
 
     @property
     def target_id(self) -> str:
