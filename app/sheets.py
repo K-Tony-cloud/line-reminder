@@ -24,10 +24,17 @@ COL_RANGE = "A:P"                   # A=1 … P=16
 
 
 def _get_service():
+    import json
+    import os
     settings = get_settings()
-    creds = service_account.Credentials.from_service_account_file(
-        settings.google_credentials_file, scopes=SCOPES
-    )
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
+    if creds_json:
+        info = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        creds = service_account.Credentials.from_service_account_file(
+            settings.google_credentials_file, scopes=SCOPES
+        )
     return build("sheets", "v4", credentials=creds)
 
 
