@@ -19,7 +19,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.app_host,
         port=port,
-        reload=dev,        # reload=False in production (avoids double scheduler)
-        workers=1,         # single worker — multiple workers would duplicate scheduler
+        reload=False,
         access_log=True,
     )

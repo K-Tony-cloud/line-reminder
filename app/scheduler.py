@@ -102,10 +102,13 @@ async def send_daily_summary() -> None:
 
 
 def start_scheduler() -> None:
+    import os
+    pid = os.getpid()
     if scheduler.running:
-        logger.warning("SCHEDULER already running — skipping duplicate start")
+        logger.warning("SCHEDULER ALREADY RUNNING — pid=%d skipping duplicate start", pid)
         _log_jobs()
         return
+    logger.info("SCHEDULER INSTANCE STARTING — pid=%d", pid)
 
     scheduler.add_job(
         check_reminders,
@@ -138,7 +141,7 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     scheduler.start()
-    logger.info("SCHEDULER started")
+    logger.info("SCHEDULER INSTANCE STARTED — pid=%d", pid)
     _log_jobs()
 
 
