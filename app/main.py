@@ -11,7 +11,7 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent
 
 from .config import get_settings, Settings
-from .scheduler import start_scheduler, stop_scheduler, send_daily_summary
+from .scheduler import start_scheduler, stop_scheduler, send_daily_summary, sync_event_reminders, schedule_event_reminder
 from .line_bot import handle_message
 from .models import CreateEventRequest, UpdateEventRequest
 from . import sheets
@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     if os.environ.get("DISABLE_SCHEDULER", "false").lower() != "true":
         print("STARTUP: starting scheduler", flush=True)
         start_scheduler()
+        print("STARTUP: syncing event reminders from Sheets", flush=True)
+        try:
+            sync_event_reminders()
+        except Exception as e:
+            logger.error("STARTUP: sync_event_reminders failed: %s", e)
         print("STARTUP: scheduler started", flush=True)
     else:
         print("STARTUP: scheduler disabled — worker handles reminders", flush=True)
@@ -137,7 +142,9 @@ async def list_events(status: str | None = None, user_id: str | None = None):
 
 @app.post("/api/events", status_code=201)
 async def create_event(req: CreateEventRequest):
-    return sheets.create_event(req)
+    event = sheets.create_event(req)
+    schedule_event_reminder(event)
+    return event
 
 
 @app.patch("/api/events/{event_id}")

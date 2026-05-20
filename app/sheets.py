@@ -140,6 +140,10 @@ def get_active_events() -> list[Event]:
     return [e for e in get_all_events() if e.status == EventStatus.active]
 
 
+def get_event_by_id(event_id: str) -> Optional[Event]:
+    return next((e for e in get_all_events() if e.id == event_id), None)
+
+
 def create_event(req: CreateEventRequest) -> Event:
     event = Event(
         id=str(uuid.uuid4())[:8].upper(),

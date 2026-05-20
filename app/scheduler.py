@@ -1,9 +1,10 @@
 import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from .sheets import get_active_events, get_all_events, mark_reminder_sent
+from .sheets import get_active_events, get_all_events, get_event_by_id, mark_reminder_sent
 from .models import EventStatus
 from .line_bot import push, _fmt_reminder, _fmt_daily_summary
 from .backup import run_backup
@@ -12,58 +13,108 @@ logger = logging.getLogger(__name__)
 BKK = ZoneInfo("Asia/Bangkok")
 scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
-# In-process dedup: (event_id, reminder_minute) — second guard after Sheets status check
-_sent_reminders: set[tuple[str, str]] = set()
+
+# ─── Per-event reminder dispatch ──────────────────────────────────────────────
+
+async def _fire_reminder(event_id: str) -> None:
+    """APScheduler date-trigger callback for a single event reminder."""
+    logger.info("REMINDER FIRE — event_id=%s", event_id)
+    try:
+        event = get_event_by_id(event_id)
+    except Exception as e:
+        logger.error("REMINDER %s — Sheets lookup failed: %s", event_id, e)
+        return
+
+    if event is None:
+        logger.warning("REMINDER %s — not found in Sheets", event_id)
+        return
+    if event.status != EventStatus.active:
+        logger.info("REMINDER %s — status=%s, skip", event_id, event.status.value)
+        return
+
+    try:
+        mark_reminder_sent(event_id)
+        push(event.target_id, _fmt_reminder(event))
+        logger.info("REMINDER SENT — event_id=%s target=%s", event_id, event.target_id)
+    except Exception as e:
+        logger.error("REMINDER FAILED — event_id=%s: %s", event_id, e)
 
 
-async def check_reminders() -> None:
-    """Poll active events and dispatch any due reminders.
+def schedule_event_reminder(event) -> None:
+    """Schedule (or replace) the date-trigger job for one event's reminder."""
+    if not scheduler.running:
+        logger.warning("schedule_event_reminder called before scheduler started — skipping %s", event.id)
+        return
 
-    Two-layer at-most-once delivery:
-      1. Sheets status=sent (survives restarts, guards against multiple instances)
-      2. _sent_reminders in-process set (guards against same-process double-fire)
-    Mark Sheets BEFORE pushing to guarantee delivery order.
-    """
-    now = datetime.now(BKK).replace(tzinfo=None, second=0, microsecond=0)
-    now_key = now.strftime("%Y-%m-%d %H:%M")
-    logger.info("Reminder check — Bangkok: %s", now_key)
+    job_id = f"reminder:{event.id}"
+    reminder_dt = event.reminder_datetime()
+    now = datetime.now(BKK).replace(tzinfo=None)
+
+    if reminder_dt <= now:
+        logger.info("SCHEDULE SKIP %s — reminder_dt=%s is in the past", event.id, reminder_dt)
+        return
+
+    existing = scheduler.get_job(job_id)
+    if existing:
+        logger.info("SCHEDULE REPLACE %s — old next_run=%s", job_id, existing.next_run_time)
+
+    scheduler.add_job(
+        _fire_reminder,
+        trigger="date",
+        run_date=reminder_dt,
+        id=job_id,
+        replace_existing=True,
+        kwargs={"event_id": event.id},
+        misfire_grace_time=120,
+    )
+    job = scheduler.get_job(job_id)
+    logger.info(
+        "SCHEDULED job=%s event=%s next_run=%s",
+        job_id, event.id, job.next_run_time if job else "?",
+    )
+
+
+def unschedule_event_reminder(event_id: str) -> None:
+    job_id = f"reminder:{event_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+        logger.info("UNSCHEDULED job=%s", job_id)
+
+
+def sync_event_reminders() -> None:
+    """On startup: remove stale reminder jobs, re-schedule all future active events."""
+    # Remove all existing per-event reminder jobs
+    removed = 0
+    for job in scheduler.get_jobs():
+        if job.id.startswith("reminder:"):
+            scheduler.remove_job(job.id)
+            removed += 1
 
     try:
         active = get_active_events()
     except Exception as e:
-        logger.error("Failed to fetch active events: %s", e)
+        logger.error("SYNC failed — could not fetch active events: %s", e)
         return
 
-    due = [
-        e for e in active
-        if e.reminder_datetime().replace(second=0, microsecond=0) <= now
-        < e.reminder_datetime().replace(second=0, microsecond=0) + timedelta(minutes=1)
-    ]
+    now = datetime.now(BKK).replace(tzinfo=None)
+    scheduled = 0
+    skipped = 0
+    for event in active:
+        reminder_dt = event.reminder_datetime()
+        if reminder_dt > now:
+            schedule_event_reminder(event)
+            scheduled += 1
+        else:
+            skipped += 1
 
-    logger.info("Active: %d | Due: %d", len(active), len(due))
+    logger.info(
+        "SYNC complete — removed=%d active=%d scheduled=%d past=%d",
+        removed, len(active), scheduled, skipped,
+    )
+    _log_jobs()
 
-    for event in due:
-        dedup_key = (event.id, now_key)
-        if dedup_key in _sent_reminders:
-            logger.warning("SKIP %s — already sent this minute (in-process dedup)", event.id)
-            continue
 
-        try:
-            reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
-            ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
-            logger.info(
-                "Dispatching %s ('%s') → %s | reminder=%s event=%s target=%s",
-                event.id, event.event_name, ctx,
-                reminder_dt.strftime("%Y-%m-%d %H:%M"), event.event_time, event.target_id,
-            )
-            _sent_reminders.add(dedup_key)
-            mark_reminder_sent(event.id)
-            push(event.target_id, _fmt_reminder(event))
-            logger.info("Delivered — %s at %s → %s", event.id, now_key, event.target_id)
-        except Exception as e:
-            _sent_reminders.discard(dedup_key)
-            logger.error("Failed — %s: %s", event.id, e)
-
+# ─── Cron jobs ────────────────────────────────────────────────────────────────
 
 async def send_daily_summary() -> None:
     """Send morning event summary to all targets with active events this week."""
@@ -101,25 +152,17 @@ async def send_daily_summary() -> None:
             logger.error("Daily summary failed → %s: %s", target_id, e)
 
 
+# ─── Lifecycle ────────────────────────────────────────────────────────────────
+
 def start_scheduler() -> None:
-    import os
     pid = os.getpid()
     if scheduler.running:
         logger.warning("SCHEDULER ALREADY RUNNING — pid=%d skipping duplicate start", pid)
         _log_jobs()
         return
+
     logger.info("SCHEDULER INSTANCE STARTING — pid=%d", pid)
 
-    scheduler.add_job(
-        check_reminders,
-        trigger="cron",
-        minute="*",
-        id="check_reminders",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=30,
-    )
     scheduler.add_job(
         send_daily_summary,
         trigger="cron",
@@ -147,9 +190,9 @@ def start_scheduler() -> None:
 
 def _log_jobs() -> None:
     jobs = scheduler.get_jobs()
-    logger.info("SCHEDULER registered jobs (%d):", len(jobs))
+    logger.info("SCHEDULER jobs (%d total):", len(jobs))
     for job in jobs:
-        logger.info("  job id=%s func=%s next_run=%s", job.id, job.func.__name__, job.next_run_time)
+        logger.info("  id=%s func=%s next_run=%s", job.id, job.func.__name__, job.next_run_time)
 
 
 def stop_scheduler() -> None:

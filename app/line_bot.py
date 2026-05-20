@@ -431,6 +431,11 @@ def _handle_message_inner(event: MessageEvent) -> None:
             logger.error("HANDLER /add Sheets write FAILED: %s", e, exc_info=True)
             reply(reply_token, f"❌ บันทึกงานไม่สำเร็จ: {e}")
             return
+        try:
+            from .scheduler import schedule_event_reminder
+            schedule_event_reminder(created)
+        except Exception as e:
+            logger.error("HANDLER /add schedule_event_reminder failed: %s", e)
         reply(reply_token, _fmt_event_created(created, added_by=display_name if in_group else ""))
         return
 
