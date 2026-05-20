@@ -26,16 +26,29 @@ COL_RANGE = "A:P"                   # A=1 … P=16
 def get_google_credentials(scopes=SCOPES):
     import json
     import os
-    # Check GOOGLE_CREDENTIALS_JSON env var first
+
+    def _load_info(raw: str) -> dict:
+        # Replace literal \n sequences in private_key before parsing
+        # (Railway sometimes stores the key with escaped newlines)
+        try:
+            info = json.loads(raw)
+        except json.JSONDecodeError:
+            # Try replacing literal \n sequences that break JSON parsing
+            raw = raw.replace("\\n", "\n")
+            info = json.loads(raw)
+        if "private_key" in info:
+            info["private_key"] = info["private_key"].replace("\\n", "\n")
+        return info
+
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
-    # Fall back: if the file setting contains JSON content (starts with '{'), use it as info
     if not creds_json:
         cred_file = get_settings().google_credentials_file
         if cred_file.strip().startswith("{"):
             creds_json = cred_file
+
     if creds_json:
         return service_account.Credentials.from_service_account_info(
-            json.loads(creds_json), scopes=scopes
+            _load_info(creds_json), scopes=scopes
         )
     return service_account.Credentials.from_service_account_file(
         get_settings().google_credentials_file, scopes=scopes
