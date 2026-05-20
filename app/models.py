@@ -24,6 +24,13 @@ class Event(BaseModel):
     responsible: str = ""    # pipe-separated list
     participants: str = ""   # pipe-separated list
     details: str = ""
+    group_id: str = ""       # LINE group/room ID; empty for direct messages
+    chat_type: str = "user"  # "user" | "group" | "room"
+
+    @property
+    def target_id(self) -> str:
+        """Push destination — group/room when available, otherwise the user."""
+        return self.group_id if self.group_id else self.user_id
 
     def reminder_datetime(self) -> datetime:
         from datetime import timedelta
@@ -51,6 +58,8 @@ class CreateEventRequest(BaseModel):
     responsible: str = ""
     participants: str = ""
     details: str = ""
+    group_id: str = ""
+    chat_type: str = "user"
 
     @field_validator("event_date")
     @classmethod

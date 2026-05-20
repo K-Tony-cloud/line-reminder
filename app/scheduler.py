@@ -20,10 +20,16 @@ async def _check_and_send_reminders() -> None:
     for event in events:
         try:
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
-            if reminder_dt == now:
-                push(event.user_id, _fmt_reminder(event))
-                mark_reminder_sent(event.id)
-                logger.info("Sent reminder for event %s to %s", event.id, event.user_id)
+            if reminder_dt != now:
+                continue
+
+            # Push to group/room if the event originated there; otherwise to the user
+            target = event.target_id
+            ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
+            push(target, _fmt_reminder(event))
+            mark_reminder_sent(event.id)
+            logger.info("Sent reminder for event %s ('%s') → %s", event.id, event.event_name, ctx)
+
         except Exception as e:
             logger.error("Error processing event %s: %s", event.id, e)
 
@@ -32,7 +38,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         _check_and_send_reminders,
         trigger="cron",
-        minute="*",  # every minute
+        minute="*",
         id="reminder_check",
         replace_existing=True,
     )

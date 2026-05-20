@@ -17,9 +17,9 @@ HEADERS = [
     "ID", "UserID", "DisplayName", "EventName",
     "EventDate", "EventTime", "ReminderMinutes", "Status", "CreatedAt",
     "Location", "Responsible", "Participants", "Details",
+    "GroupID", "ChatType",          # columns N, O
 ]
-# A=1 … M=13
-COL_RANGE = "A:M"
+COL_RANGE = "A:O"                   # A=1 … O=15
 
 
 def _get_service():
@@ -50,18 +50,17 @@ def ensure_sheet_exists():
         ).execute()
         logger.info("Created sheet '%s'", SHEET_NAME)
 
-    # Always ensure header row is up-to-date (handles migration)
+    # Always rewrite header row — idempotent migration for new columns
     sheets.values().update(
         spreadsheetId=sid,
         range=f"{SHEET_NAME}!A1",
         valueInputOption="RAW",
         body={"values": [HEADERS]},
     ).execute()
-    logger.info("Header row verified for '%s'", SHEET_NAME)
+    logger.info("Header row verified/migrated for '%s' (%d columns)", SHEET_NAME, len(HEADERS))
 
 
 def _row_to_event(row: list) -> Event:
-    # Pad to full header length so index access is safe
     while len(row) < len(HEADERS):
         row.append("")
     return Event(
@@ -78,16 +77,29 @@ def _row_to_event(row: list) -> Event:
         responsible=row[10],
         participants=row[11],
         details=row[12],
+        group_id=row[13],
+        chat_type=row[14] if row[14] else "user",
     )
+
+
+def _event_to_row(event: Event) -> list:
+    return [
+        event.id, event.user_id, event.display_name, event.event_name,
+        event.event_date, event.event_time, str(event.reminder_minutes),
+        event.status.value, event.created_at,
+        event.location, event.responsible, event.participants, event.details,
+        event.group_id, event.chat_type,
+    ]
 
 
 def get_all_events() -> list[Event]:
     service = _get_service()
     sid = _spreadsheet_id()
+    end_col = COL_RANGE.split(":")[1]
     result = (
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=sid, range=f"{SHEET_NAME}!A2:{COL_RANGE.split(':')[1]}")
+        .get(spreadsheetId=sid, range=f"{SHEET_NAME}!A2:{end_col}")
         .execute()
     )
     rows = result.get("values", [])
@@ -102,7 +114,13 @@ def get_all_events() -> list[Event]:
 
 
 def get_events_for_user(user_id: str) -> list[Event]:
-    return [e for e in get_all_events() if e.user_id == user_id]
+    """Return only direct-message events owned by this user (not group events)."""
+    return [e for e in get_all_events() if e.user_id == user_id and not e.group_id]
+
+
+def get_events_for_group(group_id: str) -> list[Event]:
+    """Return all events associated with a group or room."""
+    return [e for e in get_all_events() if e.group_id == group_id]
 
 
 def get_active_events() -> list[Event]:
@@ -124,23 +142,20 @@ def create_event(req: CreateEventRequest) -> Event:
         responsible=req.responsible,
         participants=req.participants,
         details=req.details,
+        group_id=req.group_id,
+        chat_type=req.chat_type,
     )
-    row = [
-        event.id, event.user_id, event.display_name, event.event_name,
-        event.event_date, event.event_time, str(event.reminder_minutes),
-        event.status.value, event.created_at,
-        event.location, event.responsible, event.participants, event.details,
-    ]
     service = _get_service()
     sid = _spreadsheet_id()
-    logger.info("Appending event %s ('%s') to Sheets", event.id, event.event_name)
+    ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
+    logger.info("Appending event %s ('%s') [%s]", event.id, event.event_name, ctx)
     try:
         result = service.spreadsheets().values().append(
             spreadsheetId=sid,
             range=f"{SHEET_NAME}!A1",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
-            body={"values": [row]},
+            body={"values": [_event_to_row(event)]},
         ).execute()
         logger.info("Append result: %s", result.get("updates", {}))
     except HttpError as e:
@@ -150,11 +165,10 @@ def create_event(req: CreateEventRequest) -> Event:
 
 
 def _find_row_index(event_id: str) -> Optional[int]:
-    """1-based row number (row 2 = first data row after header)."""
     events = get_all_events()
     for i, e in enumerate(events):
         if e.id == event_id:
-            return i + 2
+            return i + 2  # +1 header, +1 for 1-based index
     return None
 
 
@@ -188,12 +202,6 @@ def update_event(event_id: str, req: UpdateEventRequest) -> Optional[Event]:
     if not row_index:
         return None
 
-    row = [
-        target.id, target.user_id, target.display_name, target.event_name,
-        target.event_date, target.event_time, str(target.reminder_minutes),
-        target.status.value, target.created_at,
-        target.location, target.responsible, target.participants, target.details,
-    ]
     end_col = COL_RANGE.split(":")[1]
     service = _get_service()
     sid = _spreadsheet_id()
@@ -203,7 +211,7 @@ def update_event(event_id: str, req: UpdateEventRequest) -> Optional[Event]:
             spreadsheetId=sid,
             range=f"{SHEET_NAME}!A{row_index}:{end_col}{row_index}",
             valueInputOption="RAW",
-            body={"values": [row]},
+            body={"values": [_event_to_row(target)]},
         ).execute()
     except HttpError as e:
         logger.error("Sheets API error on update: %s", e)
