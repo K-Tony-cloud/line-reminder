@@ -18,8 +18,12 @@ scheduler = AsyncIOScheduler()
 _sent_summaries: set[str] = set()
 
 
+REMINDER_WINDOW_MINUTES = 5
+
+
 async def _check_and_send_reminders() -> None:
-    now = datetime.now().replace(second=0, microsecond=0)
+    now = datetime.now(BKK).replace(tzinfo=None, second=0, microsecond=0)
+    logger.info("Reminder check — server time (Bangkok): %s", now.strftime("%Y-%m-%d %H:%M"))
     try:
         events = get_active_events()
     except Exception as e:
@@ -29,15 +33,35 @@ async def _check_and_send_reminders() -> None:
     for event in events:
         try:
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
-            if reminder_dt != now:
+            event_dt = event.event_datetime().replace(second=0, microsecond=0)
+            window_end = reminder_dt + timedelta(minutes=REMINDER_WINDOW_MINUTES)
+
+            if now < reminder_dt:
+                logger.debug(
+                    "Event %s ('%s') — not yet: now=%s, reminder=%s, event=%s",
+                    event.id, event.event_name,
+                    now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
+                )
                 continue
 
-            # Push to group/room if the event originated there; otherwise to the user
+            if now >= window_end:
+                logger.warning(
+                    "Event %s ('%s') — window passed: now=%s, reminder=%s, window_end=%s — skipping",
+                    event.id, event.event_name,
+                    now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), window_end.strftime("%H:%M"),
+                )
+                continue
+
             target = event.target_id
             ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
+            logger.info(
+                "Sending reminder for event %s ('%s') → %s | now=%s, reminder=%s, event=%s",
+                event.id, event.event_name, ctx,
+                now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
+            )
             push(target, _fmt_reminder(event))
             mark_reminder_sent(event.id)
-            logger.info("Sent reminder for event %s ('%s') → %s", event.id, event.event_name, ctx)
+            logger.info("Reminder sent and marked as sent — event %s", event.id)
 
         except Exception as e:
             logger.error("Error processing event %s: %s", event.id, e)
