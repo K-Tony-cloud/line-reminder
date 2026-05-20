@@ -1,5 +1,4 @@
 import logging
-import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -12,70 +11,47 @@ from .line_bot import push, _fmt_reminder, _fmt_daily_summary
 from .backup import run_backup
 
 logger = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler()
+# timezone="Asia/Bangkok" makes all cron triggers default to Bangkok time
+scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
-# Dedup guard: "YYYY-MM-DD:target_id" entries added after each summary send.
-# Cleared of stale dates each run so it stays small.
+# Daily summary dedup: "YYYY-MM-DD:target_id" — cleared of stale dates each run
 _sent_summaries: set[str] = set()
 
-# Dedup guard for reminders: event IDs pushed this session.
-# Prevents duplicate pushes when Sheets status hasn't propagated yet.
-_sent_reminders: set[str] = set()
 
 async def _check_and_send_reminders() -> None:
+    """Stateless reminder dispatch — relies entirely on Sheets status as the lock."""
     now = datetime.now(BKK).replace(tzinfo=None, second=0, microsecond=0)
-    logger.info("Reminder check — Bangkok: %s | PID: %d", now.strftime("%Y-%m-%d %H:%M"), os.getpid())
+    logger.info("Reminder check — Bangkok: %s", now.strftime("%Y-%m-%d %H:%M"))
+
     try:
-        events = get_active_events()
+        active = get_active_events()
     except Exception as e:
-        logger.error("Failed to fetch events: %s", e)
+        logger.error("Failed to fetch active events: %s", e)
         return
 
-    logger.info("Active events to check: %d", len(events))
+    due = [
+        e for e in active
+        if e.reminder_datetime().replace(second=0, microsecond=0) <= now
+        < e.reminder_datetime().replace(second=0, microsecond=0) + timedelta(minutes=1)
+    ]
 
-    for event in events:
+    logger.info("Active: %d | Due: %d", len(active), len(due))
+
+    for event in due:
         try:
-            # In-memory guard: skip if already dispatched this session
-            if event.id in _sent_reminders:
-                logger.debug("Event %s — skipped (in-memory dedup)", event.id)
-                continue
-
             reminder_dt = event.reminder_datetime().replace(second=0, microsecond=0)
-            event_dt = event.event_datetime().replace(second=0, microsecond=0)
-            window_end = reminder_dt + timedelta(minutes=1)
-
-            if now < reminder_dt:
-                logger.debug(
-                    "Event %s ('%s') — not yet | now=%s reminder=%s event=%s",
-                    event.id, event.event_name,
-                    now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
-                )
-                continue
-
-            if now >= window_end:
-                logger.debug(
-                    "Event %s ('%s') — window passed | reminder=%s window_end=%s now=%s",
-                    event.id, event.event_name,
-                    reminder_dt.strftime("%H:%M"), window_end.strftime("%H:%M"), now.strftime("%H:%M"),
-                )
-                continue
-
-            target = event.target_id
             ctx = f"group={event.group_id}" if event.group_id else f"user={event.user_id}"
-
-            # At-most-once: lock in Sheets BEFORE pushing to LINE
-            _sent_reminders.add(event.id)
-            mark_reminder_sent(event.id)
             logger.info(
-                "Marked sent — dispatching reminder for event %s ('%s') → %s | now=%s reminder=%s event=%s",
+                "Event %s ('%s') → %s | reminder=%s event_time=%s",
                 event.id, event.event_name, ctx,
-                now.strftime("%H:%M"), reminder_dt.strftime("%H:%M"), event_dt.strftime("%H:%M"),
+                reminder_dt.strftime("%H:%M"), event.event_time,
             )
-            push(target, _fmt_reminder(event))
+            # Lock in Sheets FIRST — at-most-once delivery guarantee
+            mark_reminder_sent(event.id)
+            push(event.target_id, _fmt_reminder(event))
             logger.info("Reminder delivered — event %s", event.id)
-
         except Exception as e:
-            logger.error("Error processing event %s: %s", event.id, e)
+            logger.error("Failed — event %s: %s", event.id, e)
 
 
 async def _send_daily_summaries() -> None:
@@ -133,15 +109,19 @@ def start_scheduler() -> None:
         minute="*",
         id="reminder_check",
         replace_existing=True,
+        max_instances=1,   # prevent overlapping runs if Sheets API is slow
+        coalesce=True,     # skip missed ticks instead of running them all at once
+        misfire_grace_time=30,
     )
     scheduler.add_job(
         _send_daily_summaries,
         trigger="cron",
         hour=6,
         minute=0,
-        timezone="Asia/Bangkok",
         id="daily_summary",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         run_backup,
@@ -150,6 +130,8 @@ def start_scheduler() -> None:
         minute=0,
         id="daily_backup",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.start()
     logger.info("Scheduler started: reminders every minute, summary at 06:00, backup at 00:00")
