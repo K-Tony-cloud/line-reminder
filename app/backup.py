@@ -1,21 +1,16 @@
 import logging
 from datetime import datetime
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .sheets import SHEET_NAME, COL_RANGE, _spreadsheet_id, get_google_credentials
 from .config import get_settings
-from .sheets import SCOPES, SHEET_NAME, COL_RANGE, _spreadsheet_id
 
 logger = logging.getLogger(__name__)
 
 
 def _get_service():
-    settings = get_settings()
-    creds = service_account.Credentials.from_service_account_file(
-        settings.google_credentials_file, scopes=SCOPES
-    )
-    return build("sheets", "v4", credentials=creds)
+    return build("sheets", "v4", credentials=get_google_credentials())
 
 
 def _backup_spreadsheet_id() -> str:

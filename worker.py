@@ -2,18 +2,10 @@
 import asyncio
 import logging
 import os
-import tempfile
 
 import certifi
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
-
-_creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-if _creds_json:
-    _tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    _tmp.write(_creds_json)
-    _tmp.close()
-    os.environ["GOOGLE_CREDENTIALS_FILE"] = _tmp.name
 
 from app.scheduler import start_scheduler, stop_scheduler
 
