@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบแจ้งเตือนงาน LINE</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>📅 ระบบแจ้งเตือนงาน LINE</h1>
+      <div class="header-actions">
+        <span id="statusDot" class="dot dot--ok" title="ระบบทำงานปกติ"></span>
+        <button class="btn btn--primary" id="openModalBtn">+ เพิ่มงาน</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Filters -->
+    <div class="filters">
+      <label>
+        สถานะ
+        <select id="filterStatus">
+          <option value="">ทั้งหมด</option>
+          <option value="active" selected>กำลังจะถึง</option>
+          <option value="sent">แจ้งเตือนแล้ว</option>
+          <option value="cancelled">ยกเลิกแล้ว</option>
+        </select>
+      </label>
+      <label>
+        ค้นหา
+        <input type="text" id="filterSearch" placeholder="ชื่องาน หรือ สถานที่…" />
+      </label>
+      <button class="btn btn--ghost" id="refreshBtn">↺ รีเฟรช</button>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats" id="stats"></div>
+
+    <!-- Table -->
+    <div class="card">
+      <table id="eventsTable">
+        <thead>
+          <tr>
+            <th>รหัส</th>
+            <th>เรื่อง</th>
+            <th>วันที่ / เวลา</th>
+            <th>สถานที่</th>
+            <th>ผู้รับผิดชอบ</th>
+            <th>แจ้งเตือน</th>
+            <th>ผู้บันทึก</th>
+            <th>สถานะ</th>
+            <th>จัดการ</th>
+          </tr>
+        </thead>
+        <tbody id="eventsBody">
+          <tr><td colspan="9" class="empty">กำลังโหลด…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modalTitle">เพิ่มงานใหม่</h2>
+        <button class="modal-close" id="closeModalBtn">✕</button>
+      </div>
+      <form id="eventForm">
+        <input type="hidden" id="editEventId" />
+
+        <div class="form-row">
+          <label>เรื่อง *
+            <input type="text" id="fName" required placeholder="ชื่องานหรือกิจกรรม" />
+          </label>
+        </div>
+
+        <div class="form-row two-col">
+          <label>วันที่ *
+            <input type="date" id="fDate" required />
+          </label>
+          <label>เวลา *
+            <input type="time" id="fTime" required />
+          </label>
+        </div>
+
+        <div class="form-row two-col">
+          <label>แจ้งเตือนก่อน (นาที) *
+            <input type="number" id="fRemind" value="60" min="1" max="10080" required />
+          </label>
+          <label>สถานที่
+            <input type="text" id="fLocation" placeholder="ห้องประชุม / สถานที่" />
+          </label>
+        </div>
+
+        <div class="form-row">
+          <label>ผู้รับผิดชอบ <span class="hint">(คั่นด้วย |)</span>
+            <input type="text" id="fResponsible" placeholder="สว.จร.|รอง สว." />
+          </label>
+        </div>
+
+        <div class="form-row">
+          <label>ผู้เข้าร่วม <span class="hint">(คั่นด้วย |)</span>
+            <input type="text" id="fParticipants" placeholder="ชุดสายตรวจ|เจ้าหน้าที่เวร" />
+          </label>
+        </div>
+
+        <div class="form-row">
+          <label>รายละเอียด
+            <textarea id="fDetails" rows="2" placeholder="รายละเอียดเพิ่มเติม…"></textarea>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <label>LINE User ID <span class="hint">(ไม่บังคับ)</span>
+            <input type="text" id="fUserId" placeholder="เว้นว่างสำหรับ Dashboard" />
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn--ghost" id="cancelBtn">ยกเลิก</button>
+          <button type="submit" class="btn btn--primary" id="submitBtn">บันทึก</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
