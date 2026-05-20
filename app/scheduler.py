@@ -18,7 +18,21 @@ scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 
 async def _fire_reminder(event_id: str) -> None:
     """APScheduler date-trigger callback for a single event reminder."""
-    logger.info("REMINDER FIRE — event_id=%s", event_id)
+    import traceback
+    now = datetime.now(BKK)
+    job_id = f"reminder:{event_id}"
+    pid = os.getpid()
+
+    # Dump all current jobs so we can see if duplicates are registered
+    all_jobs = scheduler.get_jobs()
+    logger.warning(
+        "REMINDER_FIRE event_id=%s job_id=%s pid=%d now=%s all_jobs=%s",
+        event_id, job_id, pid, now.isoformat(),
+        [(j.id, str(j.next_run_time)) for j in all_jobs],
+    )
+    logger.warning("REMINDER_FIRE callstack: %s",
+        "".join(traceback.format_stack()[-4:-1]).replace("\n", " | "))
+
     try:
         event = get_event_by_id(event_id)
     except Exception as e:
@@ -29,13 +43,18 @@ async def _fire_reminder(event_id: str) -> None:
         logger.warning("REMINDER %s — not found in Sheets", event_id)
         return
     if event.status != EventStatus.active:
-        logger.info("REMINDER %s — status=%s, skip", event_id, event.status.value)
+        logger.warning("REMINDER %s — status=%s SKIP (already sent?)", event_id, event.status.value)
         return
 
+    logger.warning(
+        "REMINDER_SEND event_id=%s target=%s now=%s job_id=%s func=_fire_reminder pid=%d",
+        event_id, event.target_id, now.isoformat(), job_id, pid,
+    )
     try:
         mark_reminder_sent(event_id)
         push(event.target_id, _fmt_reminder(event))
-        logger.info("REMINDER SENT — event_id=%s target=%s", event_id, event.target_id)
+        logger.warning("REMINDER_DONE event_id=%s target=%s sent_at=%s",
+            event_id, event.target_id, datetime.now(BKK).isoformat())
     except Exception as e:
         logger.error("REMINDER FAILED — event_id=%s: %s", event_id, e)
 
